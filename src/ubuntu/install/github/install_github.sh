@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -ex
 
+
 # Install GitHub
 (type -p wget >/dev/null || (sudo apt update && sudo apt-get install wget -y)) \
 	&& sudo mkdir -p -m 755 /etc/apt/keyrings \
