@@ -3,7 +3,7 @@ name: Publish Docker image - ubuntu-focal-desktop
 on: 
   push:
     paths:
-      - ./dockerfile-kasm-ubuntu-focal-desktop
+      - dockerfile-kasm-ubuntu-focal-desktop
       #- .github/workflows/docker-image-ubuntu-focal-desktop.yml
   schedule:
     - cron: "0 5 * * 6"
