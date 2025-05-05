@@ -39,6 +39,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # Copy install scripts
 COPY ./src/ $INST_DIR
+COPY ./requirements.txt $STARTUPDIR/requirements.txt
+
 
 # Run installations
 RUN \
@@ -51,6 +53,29 @@ RUN \
   mkdir -p /home/kasm-user && \
   chown -R 1000:0 /home/kasm-user && \
   rm -Rf ${INST_DIR}
+
+RUN if [ "$TARGETPLATFORM" = "linux/arm64" ] ; then \
+  curl -s https://api.github.com/repos/yt-dlp/FFmpeg-Builds/releases/latest \
+      | grep browser_download_url \
+      | grep ".*master.*linuxarm64.*tar.xz" \
+      | cut -d '"' -f 4 \
+      | xargs curl -L --output ffmpeg.tar.xz ; \
+  else \
+  curl -s https://api.github.com/repos/yt-dlp/FFmpeg-Builds/releases/latest \
+      | grep browser_download_url \
+      | grep ".*master.*linux64.*tar.xz" \
+      | cut -d '"' -f 4 \
+      | xargs curl -L --output ffmpeg.tar.xz ; \
+  fi && \
+  tar -xf ffmpeg.tar.xz --strip-components=2 --no-anchored -C /usr/bin/ "ffmpeg" && \
+  tar -xf ffmpeg.tar.xz --strip-components=2 --no-anchored -C /usr/bin/ "ffprobe" && \
+  rm ffmpeg.tar.xz
+
+RUN pip install --upgrade pip
+RUN pip install --no-cache-dir --upgrade -r $STARTUPDIR/requirements.txt
+RUN pip install -U gallery-dl
+RUN pip install --upgrade --ignore-installed b2
+RUN curl -L -o /usr/bin/jq https://github.com/jqlang/jq/releases/download/jq-1.6/jq-linux64
 
 # Userspace Runtime
 ENV HOME /home/kasm-user
