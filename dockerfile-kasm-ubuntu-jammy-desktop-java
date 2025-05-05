@@ -40,7 +40,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # Copy install scripts
 COPY ./src/ $INST_DIR
-COPY ./requirements.txt $INST_DIR/requirements.txt
+COPY ./requirements.txt $STARTUPDIR/requirements.txt
 
 # Run installations
 RUN \
@@ -72,7 +72,7 @@ RUN if [ "$TARGETPLATFORM" = "linux/arm64" ] ; then \
   rm ffmpeg.tar.xz
 
 RUN pip install --upgrade pip
-RUN pip install --no-cache-dir --upgrade -r $INST_DIR/requirements.txt
+RUN pip install --no-cache-dir --upgrade -r $STARTUPDIR/requirements.txt
 RUN pip install -U gallery-dl
 RUN pip install --upgrade --ignore-installed b2
 RUN curl -L -o /usr/bin/jq https://github.com/jqlang/jq/releases/download/jq-1.6/jq-linux64
