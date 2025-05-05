@@ -1,10 +1,11 @@
-name: Publish Docker image - ubuntu-focal-desktop-java
+name: Publish Docker image - ubuntu-jammy-desktop-java
 
 on: 
   push:
     paths:
-      - dockerfile-kasm-ubuntu-focal-desktop-java
-      - .github/workflows/docker-image-ubuntu-focal-desktop-java.yml
+      - dockerfile-kasm-ubuntu-jammy-desktop-java
+      - .github/workflows/docker-image-ubuntu-jammy-desktop-java.yml
+      - requirements.txt
   schedule:
     - cron: "0 5 * * 6"
 
@@ -32,7 +33,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
         with:
-          images: antlac1/ubuntu-focal-desktop-java
+          images: antlac1/ubuntu-jammy-desktop-java
 
       - name: Build and push Docker image
         id: push
@@ -41,12 +42,12 @@ jobs:
           context: .
           file: ./dockerfile-kasm-ubuntu-focal-desktop-java
           push: true
-          tags: antlac1/ubuntu-focal-desktop-java:latest
+          tags: antlac1/ubuntu-jammy-desktop-java:latest
           labels: ${{ steps.meta.outputs.labels }}
 
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v2
         with:
-          subject-name: docker.io/antlac1/ubuntu-focal-desktop-java
+          subject-name: docker.io/antlac1/ubuntu-jammy-desktop-java
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
