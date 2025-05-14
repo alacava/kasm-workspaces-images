@@ -35,6 +35,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
                   /ubuntu/install/thunderbird/install_thunderbird.sh \
                   /ubuntu/install/slack/install_slack.sh \
                   /ubuntu/install/gamepad_utils/install_gamepad_utils.sh \
+                  /ubuntu/install/1Password/install_1Password.sh \
                   /ubuntu/install/cleanup/cleanup.sh"
 
 # Copy install scripts
