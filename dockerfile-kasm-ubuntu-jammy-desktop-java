@@ -38,6 +38,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
                   /ubuntu/install/filezilla/install_filezilla_desktop.sh \                  
                   /ubuntu/install/cleanup/cleanup.sh"
 
+                  
 # Copy install scripts
 COPY ./src/ $INST_DIR
 COPY ./requirements.txt $STARTUPDIR/requirements.txt
