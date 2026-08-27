@@ -1,12 +1,12 @@
 name: Publish Docker image - redroid
 
 on: 
-  push:
-    paths:
-      - dockerfile-kasm-redroid
-      - .github/workflows/docker-image-redroid.yml
-  schedule:
-    - cron: "0 5 * * 6"
+#  push:
+#    paths:
+#      - dockerfile-kasm-redroid
+#      - .github/workflows/docker-image-redroid.yml
+#  schedule:
+#    - cron: "0 5 * * 6"
 
 
 jobs:

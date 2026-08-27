@@ -1,13 +1,13 @@
 name: Publish Docker image - ubuntu-jammy-desktop
 
 on: 
-  push:
-    paths:
-      - dockerfile-kasm-ubuntu-jammy-desktop
-      - .github/workflows/docker-image-ubuntu-jammy-desktop.yml
-      - requirements.txt
-  schedule:
-    - cron: "0 5 * * 6"
+#  push:
+#    paths:
+#      - dockerfile-kasm-ubuntu-jammy-desktop
+#      - .github/workflows/docker-image-ubuntu-jammy-desktop.yml
+#      - requirements.txt
+#  schedule:
+#    - cron: "0 5 * * 6"
 
 
 jobs:
