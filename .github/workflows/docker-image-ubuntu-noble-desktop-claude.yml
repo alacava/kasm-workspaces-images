@@ -1,4 +1,4 @@
-name: Publish Docker image - ubuntu-jammy-desktop-java
+name: Publish Docker image - ubuntu-noble-desktop-claude
 
 on: 
   push:
