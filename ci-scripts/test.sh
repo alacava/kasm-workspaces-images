@@ -164,6 +164,12 @@ for IP in "${IPS[@]}"; do
   done
 done
 
+# Materialize docker config from env var if docker login was not run
+if [ ! -f /root/.docker/config.json ] && [ -n "${DOCKER_AUTH_CONFIG:-}" ]; then
+  mkdir -p /root/.docker
+  printf '%s' "${DOCKER_AUTH_CONFIG}" > /root/.docker/config.json
+fi
+
 # Copy over docker auth
 for IP in "${IPS[@]}"; do
   scp \
@@ -188,7 +194,7 @@ ssh \
 ready_check
 
 # Pull tester image
-docker pull ${ORG_NAME}/kasm-tester:1.17.0
+docker pull ${ORG_NAME}/kasm-tester:1.18.0
 
 # Run test
 cp /root/.ssh/id_rsa $(dirname ${CI_PROJECT_DIR})/sshkey
@@ -210,7 +216,7 @@ docker run --rm \
   -e REPO=workspaces-images \
   -e AUTOMATED=true \
   -v $(dirname ${CI_PROJECT_DIR})/sshkey:/sshkey:ro  ${SLIM_FLAG} \
-  kasmweb/kasm-tester:1.17.0
+  kasmweb/kasm-tester:1.18.0
 
 # Shutdown Instances
 turnoff
