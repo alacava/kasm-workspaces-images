@@ -34,6 +34,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
                   /ubuntu/install/gamepad_utils/install_gamepad_utils.sh \
                   /ubuntu/install/claude_code/install_claude_code.sh \
                   /ubuntu/install/github/install_github_cli.sh \
+                  /ubuntu/install/1Password/install_1password.sh \
                   /ubuntu/install/cleanup/cleanup.sh"
 
 # Copy install scripts
