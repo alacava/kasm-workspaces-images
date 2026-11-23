@@ -22,6 +22,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
                   /ubuntu/install/only_office/install_only_office.sh \
                   /ubuntu/install/zoom/install_zoom.sh \
                   /ubuntu/install/slack/install_slack.sh \
+                  /ubuntu/install/1Password/install_1password.sh \
                   /ubuntu/install/cleanup/cleanup.sh"
 
 # Copy install scripts
