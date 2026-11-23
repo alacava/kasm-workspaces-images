@@ -14,12 +14,16 @@ export AWS_ACCESS_KEY_ID="${AWS_ID}"
 export AWS_SECRET_ACCESS_KEY="${AWS_KEY}"
 export AWS_DEFAULT_REGION=us-east-1
 
-# Install tools for testing
-apk add \
-  aws-cli \
-  curl \
-  jq \
-  openssh-client
+# This job runs on node:24 (Debian), not docker:29.4.3 (Alpine), because
+# Playwright's bundled Chromium needs glibc. docker.io is already installed
+# by that job's own before_script (see gitlab-ci.template).
+apt-get update && apt-get install -y --no-install-recommends awscli jq git openssh-client
+
+# Downloads GitLab Secure Files (the license activation key) into
+# SECURE_FILES_DOWNLOAD_PATH via the community installer.
+export SECURE_FILES_DOWNLOAD_PATH="/tmp/"
+curl -f --silent -o /tmp/load-secure-files-installer "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/load-secure-files/-/raw/5e1cf0e12fd9e8910f8dc7272e8844db474995cc/installer"
+bash /tmp/load-secure-files-installer
 
 ## Functions ##
 # Ami locater
@@ -65,6 +69,66 @@ fi
 # Setup SSH Key
 mkdir -p /root/.ssh
 RAND=$(head /dev/urandom | tr -dc 'a-z0-9' | head -c36)
+
+# Kasm instance container logs, written into the Playwright job's existing
+# test-results/ artifact tree. Only gathered on a failing Playwright run with
+# SKIP_TRACE_ON_FAILURE=false (see turnoff below) -- off by default, same as
+# the trace/DB-snapshot artifacts.
+LOGS_DIR="kasmweb-checkout/test-results/kasm-logs"
+function gather_kasm_logs() {
+  mkdir -p "${LOGS_DIR}"
+  for IP in "${IPS[@]}"; do
+    echo "Gathering Kasm logs from ${IP}..."
+    # Individually bounded so a wedged instance can't hang turnoff() and
+    # block the poweroff loop below it.
+    CONTAINERS=$(timeout 30 ssh \
+      -oConnectTimeout=4 \
+      -oStrictHostKeyChecking=no \
+      ${USER}@${IP} \
+      sudo docker container ls --all --format '{{.Names}}' || :)
+    for CONTAINER in ${CONTAINERS}; do
+      timeout 60 ssh \
+        -oConnectTimeout=4 \
+        -oStrictHostKeyChecking=no \
+        ${USER}@${IP} \
+        sudo docker logs "${CONTAINER}" &>"${LOGS_DIR}/${CONTAINER}-${IP}.log" || :
+    done
+  done
+}
+
+# Registered on EXIT (not ERR) so cleanup runs on any exit path, including a
+# GitLab job cancellation/timeout signal, which ERR does not catch.
+function turnoff() {
+  # Captured first, before any command can clobber $?. Nonzero means the
+  # script itself died; PLAYWRIGHT_STATUS (below) covers a clean run where
+  # the tests failed.
+  EXIT_CODE="$?"
+
+  if { [ "${EXIT_CODE}" -ne 0 ] || [ "${PLAYWRIGHT_STATUS:-0}" -ne 0 ] \
+    || [ "${SESSION_INTEGRITY_STATUS:-0}" -ne 0 ]; } \
+    && [ "${SKIP_TRACE_ON_FAILURE:-true}" != "true" ]; then
+    gather_kasm_logs
+  fi
+
+  for IP in "${IPS[@]}"; do
+    ssh \
+      -oConnectTimeout=4 \
+      -oStrictHostKeyChecking=no \
+      ${USER}@${IP} \
+      "sudo poweroff" || :
+  done
+  aws ec2 delete-key-pair --key-name ${RAND} || :
+
+  # Exit 3 is reserved for a tolerated session-integrity failure (the job's
+  # allow_failure: exit_codes). Under `set -e` any failing command's status
+  # becomes the script's (ssh passes the remote script's through), so a 3
+  # from anywhere else is turned into 1 rather than tolerated.
+  if [ "${EXIT_CODE}" -eq 3 ] && [ "${SESSION_INTEGRITY_TOLERATED:-false}" != "true" ]; then
+    exit 1
+  fi
+}
+trap turnoff EXIT
+
 SSH_KEY=$(aws ec2 create-key-pair --key-name ${RAND} | jq -r '.KeyMaterial')
 cat >/root/.ssh/id_rsa <<EOL
 $SSH_KEY
@@ -74,7 +138,7 @@ chmod 600 /root/.ssh/id_rsa
 # Launch instance
 cat >/root/user-data <<EOL
 #!/bin/bash
-shutdown -P +60
+shutdown -P +120
 EOL
 aws ec2 run-instances \
   --image-id ${AMI} \
@@ -111,19 +175,6 @@ for INSTANCE_ID in "${INSTANCES[@]}"; do
     fi
   done
 done
-
-# Shutdown Instances function and trap
-function turnoff() {
-  for IP in "${IPS[@]}"; do
-    ssh \
-      -oConnectTimeout=4 \
-      -oStrictHostKeyChecking=no \
-      ${USER}@${IP} \
-      "sudo poweroff" || :
-  done
-  aws ec2 delete-key-pair --key-name ${RAND}
-}
-trap turnoff ERR
 
 # Make sure the instance is up
 for IP in "${IPS[@]}"; do
@@ -164,6 +215,37 @@ for IP in "${IPS[@]}"; do
   done
 done
 
+# AWS Ubuntu AMIs are pre-configured to use a regional AWS apt mirror
+# (e.g. <region>.ec2.archive.ubuntu.com), which is occasionally broken or
+# unavailable. Force the instance to use the official Ubuntu mirrors instead.
+if [[ "${ARCH}" == "x86_64" ]]; then
+  APT_MIRROR="http://archive.ubuntu.com/ubuntu/"
+  APT_SECURITY_MIRROR="http://security.ubuntu.com/ubuntu/"
+else
+  APT_MIRROR="http://ports.ubuntu.com/ubuntu-ports/"
+  APT_SECURITY_MIRROR="http://ports.ubuntu.com/ubuntu-ports/"
+fi
+cat >/root/sources.list <<EOL
+deb ${APT_MIRROR} jammy main restricted universe multiverse
+deb ${APT_MIRROR} jammy-updates main restricted universe multiverse
+deb ${APT_MIRROR} jammy-backports main restricted universe multiverse
+deb ${APT_SECURITY_MIRROR} jammy-security main restricted universe multiverse
+EOL
+APT_UPDATE_TIMEOUT=300
+for IP in "${IPS[@]}"; do
+  echo "${IP}: Switching to official Ubuntu mirrors"
+  timeout ${APT_UPDATE_TIMEOUT} scp \
+    -oConnectTimeout=10 \
+    -oStrictHostKeyChecking=no \
+    /root/sources.list \
+    ${USER}@${IP}:/tmp/
+  timeout ${APT_UPDATE_TIMEOUT} ssh \
+    -oConnectTimeout=10 \
+    -oStrictHostKeyChecking=no \
+    ${USER}@${IP} \
+    "sudo mv -v /tmp/sources.list /etc/apt/sources.list && sudo rm -vf /etc/apt/sources.list.d/ubuntu.sources && sudo apt-get update -o APT::Update::Error-Mode=any"
+done
+
 # Materialize docker config from env var if docker login was not run
 if [ ! -f /root/.docker/config.json ] && [ -n "${DOCKER_AUTH_CONFIG:-}" ]; then
   mkdir -p /root/.docker
@@ -183,46 +265,152 @@ for IP in "${IPS[@]}"; do
     "sudo mkdir -p /root/.docker && sudo mv /tmp/config.json /root/.docker/ && sudo chown root:root /root/.docker/config.json"
 done
 
-# Install Kasm workspaces
+# TEST_INSTALLER_ROLLING for the Playwright tester; see its definition in
+# .gitlab-ci.yml for why.
+INSTALLER_URL="${TEST_INSTALLER_ROLLING}"
+
+# Install Kasm workspaces from the stock bundle -- its frontend is what
+# gets tested; see KASMWEB_VERSION in .gitlab-ci.yml for the spec source.
+cat >/tmp/kasm_install_remote.sh <<EOF
+set -e
+curl -L -o /tmp/installer.tar.gz "${INSTALLER_URL}"
+cd /tmp
+tar xf installer.tar.gz
+sudo bash kasm_release/install.sh -H -u -I -e -P ${RAND} -U ${RAND}
+EOF
+
+scp \
+  -oStrictHostKeyChecking=no \
+  /tmp/kasm_install_remote.sh \
+  ${USER}@"${IPS[0]}":/tmp/kasm_install_remote.sh
 ssh \
   -oConnectTimeout=4 \
   -oStrictHostKeyChecking=no \
   ${USER}@"${IPS[0]}" \
-  "curl -L -o /tmp/installer.tar.gz ${TEST_INSTALLER} && cd /tmp && tar xf installer.tar.gz && sudo bash kasm_release/install.sh -H -u -I -e -P ${RAND} -U ${RAND}"
+  "bash /tmp/kasm_install_remote.sh"
 
 # Ensure install is up and running
 ready_check
 
-# Pull tester image
-docker pull ${ORG_NAME}/kasm-tester:1.18.0
+# Grants docker-group access so the ssh: DOCKER_HOST transport below can
+# reach the daemon without sudo (imageWarmup.ts's own `docker pull` needs
+# it too). Group membership is re-evaluated per SSH login, so no restart
+# is needed.
+ssh \
+  -oConnectTimeout=10 \
+  -oStrictHostKeyChecking=no \
+  ${USER}@"${IPS[0]}" \
+  "sudo usermod -aG docker ${USER}"
 
-# Run test
-cp /root/.ssh/id_rsa $(dirname ${CI_PROJECT_DIR})/sshkey
-chmod 777 $(dirname ${CI_PROJECT_DIR})/sshkey
-docker run --rm \
-  -e TZ=US/Pacific \
-  -e KASM_HOST=${IPS[0]} \
-  -e KASM_PORT=443 \
-  -e KASM_PASSWORD="${RAND}" \
-  -e SSH_USER=$USER \
-  -e DOCKERUSER=$DOCKER_HUB_USERNAME \
-  -e DOCKERPASS=$DOCKER_HUB_PASSWORD \
-  -e TEST_IMAGE="${ORG_NAME}/image-cache-private:${ARCH}-${NAME}-${SANITIZED_BRANCH}-${CI_PIPELINE_ID}" \
-  -e AWS_KEY=${KASM_TEST_AWS_KEY} \
-  -e AWS_SECRET="${KASM_TEST_AWS_SECRET}" \
-  -e SLACK_TOKEN=${SLACK_TOKEN} \
-  -e S3_BUCKET=kasm-ci \
-  -e COMMIT=${CI_COMMIT_SHA} \
-  -e REPO=workspaces-images \
-  -e AUTOMATED=true \
-  -v $(dirname ${CI_PROJECT_DIR})/sshkey:/sshkey:ro  ${SLIM_FLAG} \
-  kasmweb/kasm-tester:1.18.0
+# docker's ssh: transport shells out to a bare `ssh` with no per-call
+# flags, so it needs its own config to skip host-key checking for this
+# fresh instance.
+mkdir -p /root/.ssh
+cat >>/root/.ssh/config <<EOF
+Host ${IPS[0]}
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+EOF
+chmod 600 /root/.ssh/config
 
-# Shutdown Instances
-turnoff
+# Exported, not passed as a one-off `docker -H`, because imageWarmup.ts's
+# own `docker pull` call needs it too and can't take a per-call flag.
+export DOCKER_HOST="ssh://${USER}@${IPS[0]}"
 
-# Exit 1 if test failed or file does not exist
-STATUS=$(curl -sL https://kasm-ci.s3.amazonaws.com/${CI_COMMIT_SHA}/${ARCH}/kasmweb/image-cache-private/${ARCH}-${NAME}-${SANITIZED_BRANCH}-${CI_PIPELINE_ID}/ci-status.yml | awk -F'"' '{print $2}')
-if [ ! "${STATUS}" == "PASS" ]; then
-  exit 1
+# The frontend under test is whatever TEST_INSTALLER_ROLLING's backend
+# bundle already installed -- this clone only supplies the Playwright spec
+# files themselves, pinned to the same branch.
+rm -rf kasmweb-checkout
+git clone --depth 1 --branch "${KASMWEB_VERSION:-develop}" \
+  "https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/kasm-technologies/internal/kasmweb.git" \
+  kasmweb-checkout
+
+# Playwright tester. Runs directly in this job's own node:24 shell rather
+# than a separate tester image. Runs on both ARCH legs.
+#
+# PLAYWRIGHT_STATUS and SESSION_INTEGRITY_STATUS are captured explicitly,
+# not left to `set -e`, so both runs happen and `turnoff` still shuts the
+# instance down. Together they're the job's result signal.
+
+# The environment both Playwright runs share; called inside each run's
+# subshell, so the exports stay scoped to it. DOCKER_HOST, exported above, is
+# inherited: imageWarmup.ts's `docker pull` and the session-integrity specs'
+# `docker exec` need it to reach the instance daemon.
+function export_playwright_env() {
+  export CI=true
+  export KASM_ADDR="https://${IPS[0]}"
+  export USER_NAME="admin@kasm.local"
+  export PASSWORD="${RAND}"
+  # ${NAME} is workspaces-images' own canonical name for this app image,
+  # used verbatim as the label so it matches this image's own
+  # capability-skip map on the kasmweb side.
+  export KASM_TEST_IMAGE_REFS="${NAME}|${ORG_NAME}/image-cache-private:${ARCH}-${NAME}-${SANITIZED_BRANCH}-${CI_PIPELINE_ID}"
+  # activation_key is the Secure File downloaded above, not a plain CI/CD
+  # variable, so it's read from disk.
+  export KASM_LICENSE_KEY="$(cat /tmp/activation_key)"
+  # Defaults to "true" to bound per-failure artifact size (pg_dump) across
+  # the many per-image runs this pipeline accumulates. Set false to get a
+  # DB snapshot for a specific failure.
+  export SKIP_DB_SNAPSHOT_ON_FAILURE="${SKIP_DB_SNAPSHOT_ON_FAILURE:-true}"
+  # Same reasoning: bounds trace.zip size (70MB+ each) across per-image
+  # runs. Also gates gather_kasm_logs above. Set false for a real trace.
+  export SKIP_TRACE_ON_FAILURE="${SKIP_TRACE_ON_FAILURE:-true}"
+}
+
+PLAYWRIGHT_STATUS=0
+echo "Running Playwright tests against ${NAME}"
+# Subshell scopes the cd and all these exports to just this step.
+set +e
+(
+  set -e
+  cd kasmweb-checkout
+  npm ci
+  npx playwright install --with-deps chromium
+  export_playwright_env
+  npx playwright test --project="image-spec:${NAME}" --workers=1
+)
+PLAYWRIGHT_STATUS=$?
+
+# Session-integrity checks (input delivery through the viewer, later vision).
+# Runs even when the image-specs failed, so its results are still collected,
+# with its own JUnit file and output directory so the first run's results
+# survive. Runs on every image unless SESSION_INTEGRITY_IMAGES (space-separated)
+# narrows it to the listed ones, and skipped when the kasmweb branch has no
+# such project yet.
+SESSION_INTEGRITY_STATUS=0
+if [[ -n "${SESSION_INTEGRITY_IMAGES:-}" && " ${SESSION_INTEGRITY_IMAGES} " != *" ${NAME} "* ]]; then
+  echo "${NAME} isn't in SESSION_INTEGRITY_IMAGES; skipping session-integrity tests"
+else
+  (
+    set -e
+    cd kasmweb-checkout
+    export_playwright_env
+    # Set before --list too, which otherwise writes its listing over results.xml.
+    export PLAYWRIGHT_JUNIT_OUTPUT_FILE="playwright-results/session-integrity.xml"
+    if ! list_output="$(npx playwright test --list --project="session-integrity:${NAME}" 2>&1)"; then
+      if grep -q 'Project(s) .* not found' <<<"${list_output}"; then
+        echo "No session-integrity:${NAME} project on this kasmweb branch; skipping"
+        exit 0
+      fi
+      echo "${list_output}"
+      echo "Listing session-integrity:${NAME} failed"
+      exit 1
+    fi
+    echo "Running session-integrity tests against ${NAME}"
+    npx playwright test --project="session-integrity:${NAME}" --workers=1 \
+      --output=test-results-session-integrity
+  )
+  SESSION_INTEGRITY_STATUS=$?
+fi
+set -e
+
+echo "Playwright exit status: image-spec ${PLAYWRIGHT_STATUS}, session-integrity ${SESSION_INTEGRITY_STATUS}"
+if [ "${PLAYWRIGHT_STATUS}" -ne 0 ]; then
+  exit "${PLAYWRIGHT_STATUS}"
+fi
+# Tolerated as "passed with warnings" until the session-integrity checks are
+# trusted; then this exits non-zero like an image-spec failure.
+if [ "${SESSION_INTEGRITY_STATUS}" -ne 0 ]; then
+  SESSION_INTEGRITY_TOLERATED=true
+  exit 3
 fi
